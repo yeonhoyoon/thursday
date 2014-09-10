@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -41,15 +42,31 @@ func hello(w http.ResponseWriter, r *http.Request) {
 type multiWeatherProvider []weatherProvider
 
 func (w multiWeatherProvider) temperature(city string) (float64, error) {
-	sum := 0.0
+	temps := make(chan float64, len(w))
+	errs := make(chan error, len(w))
 
 	for _, provider := range w {
-		k, err := provider.temperature(city)
-		if err != nil {
-			return 0, err
-		}
+		go func(p weatherProvider) {
+			k, err := p.temperature(city)
+			if err != nil {
+				errs <- err
+				return
+			}
+			temps <- k
+		}(provider)
+	}
 
-		sum += k
+	sum := 0.0
+
+	for i := 0; i < len(w); i++ {
+		select {
+		case temp := <-temps:
+			sum += temp
+		case err := <-errs:
+			return 0, err
+		case <-time.After(300 * time.Millisecond):
+			return 0, errors.New("timed out")
+		}
 	}
 
 	return sum / float64(len(w)), nil
